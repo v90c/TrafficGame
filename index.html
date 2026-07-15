@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Lane Dodger — Traffic Game</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230b0e14'/%3E%3Crect x='12' y='6' width='8' height='20' rx='3' fill='%233ecfff'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+
+    <canvas id="game" width="480" height="720"></canvas>
+
+    <!-- HUD shown during play -->
+    <div id="hud" class="hidden">
+      <div class="hud-left">
+        <span class="hud-label">SCORE</span>
+        <span id="scoreValue">0</span>
+      </div>
+      <div class="hud-right">
+        <span class="hud-label">BEST</span>
+        <span id="bestValue">0</span>
+      </div>
+    </div>
+
+    <button id="pauseBtn" class="icon-btn hidden" aria-label="Pause">❚❚</button>
+
+    <!-- Start screen -->
+    <div id="startScreen" class="overlay">
+      <h1 class="title">LANE<span>DODGER</span></h1>
+      <p class="subtitle">Flick between lanes. Don't get clipped.</p>
+
+      <div class="difficulty-picker">
+        <p class="section-label">Choose difficulty</p>
+        <div class="diff-buttons">
+          <button class="diff-btn" data-diff="easy">
+            <span class="diff-name">Easy</span>
+            <span class="diff-desc">Relaxed traffic</span>
+          </button>
+          <button class="diff-btn selected" data-diff="medium">
+            <span class="diff-name">Medium</span>
+            <span class="diff-desc">Steady flow</span>
+          </button>
+          <button class="diff-btn" data-diff="fast">
+            <span class="diff-name">Fast</span>
+            <span class="diff-desc">Cars come quick</span>
+          </button>
+        </div>
+      </div>
+
+      <button id="startBtn" class="primary-btn">Start Engine</button>
+
+      <div class="controls-hint">
+        <div class="hint-row"><kbd>&larr;</kbd><kbd>&rarr;</kbd> or <kbd>A</kbd><kbd>D</kbd> to switch lanes</div>
+        <div class="hint-row">On mobile: swipe or tap left / right</div>
+        <div class="hint-row"><kbd>P</kbd> to pause</div>
+      </div>
+    </div>
+
+    <!-- Pause screen -->
+    <div id="pauseScreen" class="overlay hidden">
+      <h2 class="title small">PAUSED</h2>
+      <button id="resumeBtn" class="primary-btn">Resume</button>
+      <button id="quitBtn" class="secondary-btn">Quit to Menu</button>
+    </div>
+
+    <!-- Game over screen -->
+    <div id="gameOverScreen" class="overlay hidden">
+      <h2 class="title small crash">CRASHED!</h2>
+      <div class="results">
+        <div class="result-row">
+          <span>Score</span>
+          <span id="finalScore">0</span>
+        </div>
+        <div class="result-row">
+          <span>Best (<span id="finalDiffLabel">medium</span>)</span>
+          <span id="finalBest">0</span>
+        </div>
+        <div id="newBestBadge" class="new-best hidden">New Best!</div>
+      </div>
+      <button id="retryBtn" class="primary-btn">Try Again</button>
+      <button id="menuBtn" class="secondary-btn">Change Difficulty</button>
+    </div>
+
+  </div>
+
+<script src="game.js"></script>
+</body>
+</html>
