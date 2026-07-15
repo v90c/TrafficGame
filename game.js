@@ -805,7 +805,63 @@
     ctx.globalAlpha = 1;
 
     if (gameState === STATE.COUNTDOWN) {
+      drawTrafficLight();
       drawCountdown();
+    }
+
+    ctx.restore();
+  }
+
+  function drawTrafficLight() {
+    const cx = LW / 2;
+    const cy = 178;
+    const w = 76, h = 172, r = 18;
+    const lampR = 22;
+    const offsets = [-52, 0, 52];
+    const lamps = [
+      { off: '#4a1c1c', on: '#ff3b3b' }, // red
+      { off: '#4a3e14', on: '#ffd23b' }, // yellow
+      { off: '#123f22', on: '#3bff7a' }, // green
+    ];
+    // 3 & 2 -> red, 1 -> yellow, GO -> green
+    const lit = countdownIndex <= 1 ? 0 : countdownIndex === 2 ? 1 : 2;
+
+    ctx.save();
+
+    // housing
+    ctx.fillStyle = '#14161c';
+    drawRoundedRect(cx - w / 2, cy - h / 2, w, h, r);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+    ctx.lineWidth = 2;
+    drawRoundedRect(cx - w / 2, cy - h / 2, w, h, r);
+    ctx.stroke();
+
+    // mount bracket
+    ctx.fillStyle = '#14161c';
+    ctx.fillRect(cx - 5, cy - h / 2 - 14, 10, 14);
+
+    for (let i = 0; i < 3; i++) {
+      const ly = cy + offsets[i];
+      const isLit = lit === i;
+      ctx.beginPath();
+      ctx.arc(cx, ly, lampR, 0, Math.PI * 2);
+      if (isLit) {
+        ctx.shadowColor = lamps[i].on;
+        ctx.shadowBlur = 26;
+      } else {
+        ctx.shadowBlur = 0;
+      }
+      ctx.fillStyle = isLit ? lamps[i].on : lamps[i].off;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      if (isLit) {
+        ctx.beginPath();
+        ctx.ellipse(cx - lampR * 0.32, ly - lampR * 0.32, lampR * 0.32, lampR * 0.2, -0.6, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.45)';
+        ctx.fill();
+      }
     }
 
     ctx.restore();
