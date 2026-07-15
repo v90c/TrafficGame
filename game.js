@@ -61,6 +61,139 @@
   const TRAFFIC_COLORS = ['#e94f4f', '#4f8ce9', '#e9a94f', '#8a5fd6', '#d6d6d6', '#4f4f4f', '#e94f9d', '#5fd68a'];
   const PLAYER_COLOR = '#3ecfff';
 
+  // ---------- Audio (synthesized with Web Audio API, no external assets) ----------
+  const Sound = (() => {
+    let ctx = null;
+    let masterGain = null;
+    let engineOsc = null, engineGain = null, engineFilter = null;
+    let muted = localStorage.getItem('laneDodger_muted') === '1';
+
+    function ensureCtx() {
+      if (!ctx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        ctx = new AC();
+        masterGain = ctx.createGain();
+        masterGain.gain.value = muted ? 0 : 0.8;
+        masterGain.connect(ctx.destination);
+      }
+      if (ctx.state === 'suspended') ctx.resume();
+      return ctx;
+    }
+
+    function isMuted() { return muted; }
+
+    function setMuted(val) {
+      muted = val;
+      localStorage.setItem('laneDodger_muted', muted ? '1' : '0');
+      if (masterGain) masterGain.gain.setTargetAtTime(muted ? 0 : 0.8, ctx.currentTime, 0.05);
+    }
+
+    function toggleMuted() { setMuted(!muted); return muted; }
+
+    function blip({ freq = 440, duration = 0.12, type = 'sine', gainPeak = 0.3, freqEnd = null, delay = 0 }) {
+      const c = ensureCtx();
+      if (!c) return;
+      const t0 = c.currentTime + delay;
+      const osc = c.createOscillator();
+      const g = c.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, t0);
+      if (freqEnd !== null) osc.frequency.exponentialRampToValueAtTime(Math.max(1, freqEnd), t0 + duration);
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(gainPeak, t0 + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+      osc.connect(g);
+      g.connect(masterGain);
+      osc.start(t0);
+      osc.stop(t0 + duration + 0.02);
+    }
+
+    function noiseBurst({ duration = 0.3, gainPeak = 0.5, delay = 0, filterFreq = 1200 }) {
+      const c = ensureCtx();
+      if (!c) return;
+      const t0 = c.currentTime + delay;
+      const bufferSize = Math.max(1, Math.floor(c.sampleRate * duration));
+      const buffer = c.createBuffer(1, bufferSize, c.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+      const noise = c.createBufferSource();
+      noise.buffer = buffer;
+      const filter = c.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = filterFreq;
+      const g = c.createGain();
+      g.gain.setValueAtTime(gainPeak, t0);
+      g.gain.exponentialRampToValueAtTime(0.001, t0 + duration);
+      noise.connect(filter);
+      filter.connect(g);
+      g.connect(masterGain);
+      noise.start(t0);
+      noise.stop(t0 + duration);
+    }
+
+    function laneSwitch() {
+      blip({ freq: 520, freqEnd: 780, duration: 0.09, type: 'triangle', gainPeak: 0.16 });
+    }
+
+    function nearMiss() {
+      blip({ freq: 700, freqEnd: 1100, duration: 0.14, type: 'sine', gainPeak: 0.2 });
+    }
+
+    function uiClick() {
+      blip({ freq: 340, duration: 0.05, type: 'square', gainPeak: 0.1 });
+    }
+
+    function countdownBeep(isFinal) {
+      blip({ freq: isFinal ? 880 : 440, duration: isFinal ? 0.35 : 0.15, type: 'square', gainPeak: 0.22 });
+    }
+
+    function crash() {
+      noiseBurst({ duration: 0.5, gainPeak: 0.55, filterFreq: 900 });
+      blip({ freq: 140, freqEnd: 40, duration: 0.4, type: 'sawtooth', gainPeak: 0.35, delay: 0.02 });
+    }
+
+    function startEngine() {
+      const c = ensureCtx();
+      if (!c || engineOsc) return;
+      engineOsc = c.createOscillator();
+      engineOsc.type = 'sawtooth';
+      engineOsc.frequency.value = 55;
+      engineFilter = c.createBiquadFilter();
+      engineFilter.type = 'lowpass';
+      engineFilter.frequency.value = 200;
+      engineGain = c.createGain();
+      engineGain.gain.value = 0.05;
+      engineOsc.connect(engineFilter);
+      engineFilter.connect(engineGain);
+      engineGain.connect(masterGain);
+      engineOsc.start();
+    }
+
+    function updateEngine(speedRatio) {
+      if (!engineOsc || !ctx) return;
+      const r = Math.max(0, Math.min(1.3, speedRatio));
+      engineOsc.frequency.setTargetAtTime(55 + r * 60, ctx.currentTime, 0.15);
+      engineFilter.frequency.setTargetAtTime(190 + r * 280, ctx.currentTime, 0.15);
+    }
+
+    function stopEngine() {
+      if (!engineOsc) return;
+      try { engineOsc.stop(); } catch (e) { /* already stopped */ }
+      engineOsc.disconnect(); engineGain.disconnect(); engineFilter.disconnect();
+      engineOsc = null; engineGain = null; engineFilter = null;
+    }
+
+    function pauseAll() { if (ctx && ctx.state === 'running') ctx.suspend(); }
+    function resumeAll() { if (ctx && ctx.state === 'suspended') ctx.resume(); }
+
+    return {
+      ensureCtx, isMuted, setMuted, toggleMuted,
+      laneSwitch, nearMiss, uiClick, countdownBeep, crash,
+      startEngine, updateEngine, stopEngine, pauseAll, resumeAll,
+    };
+  })();
+
   // ---------- DOM ----------
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
@@ -68,6 +201,15 @@
   const scoreValueEl = document.getElementById('scoreValue');
   const bestValueEl = document.getElementById('bestValue');
   const pauseBtn = document.getElementById('pauseBtn');
+  const muteBtn = document.getElementById('muteBtn');
+
+  const ICON_UNMUTED = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 10v4h4l5 5V5L7 10H3z"/><path d="M16.5 12c0-1.77-.77-3.29-2-4.24v8.48c1.23-.95 2-2.47 2-4.24z"/><path d="M14.5 3.23v2.06c2.89 1.02 5 3.76 5 6.71s-2.11 5.69-5 6.71v2.06c4.01-1.09 7-4.72 7-8.77s-2.99-7.68-7-8.77z"/></svg>';
+  const ICON_MUTED = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 10v4h4l5 5V5L7 10H3z"/><path d="M19.5 12l2.1 2.1-1.4 1.4-2.1-2.1-2.1 2.1-1.4-1.4 2.1-2.1-2.1-2.1 1.4-1.4 2.1 2.1 2.1-2.1 1.4 1.4z"/></svg>';
+
+  function updateMuteIcon() {
+    muteBtn.innerHTML = Sound.isMuted() ? ICON_MUTED : ICON_UNMUTED;
+    muteBtn.setAttribute('aria-label', Sound.isMuted() ? 'Unmute sound' : 'Mute sound');
+  }
 
   const startScreen = document.getElementById('startScreen');
   const pauseScreen = document.getElementById('pauseScreen');
@@ -94,8 +236,13 @@
   function setBest(diff, val) { localStorage.setItem(bestKey(diff), String(val)); }
 
   // ---------- Game state ----------
-  const STATE = { MENU: 'menu', PLAYING: 'playing', PAUSED: 'paused', GAMEOVER: 'gameover' };
+  const STATE = { MENU: 'menu', COUNTDOWN: 'countdown', PLAYING: 'playing', PAUSED: 'paused', GAMEOVER: 'gameover' };
   let gameState = STATE.MENU;
+
+  const COUNTDOWN_STEPS = ['3', '2', '1', 'GO'];
+  const COUNTDOWN_STEP_TIME = 0.7;
+  let countdownIndex = 0;
+  let countdownElapsed = 0;
 
   let player, traffic, particles, popups;
   let elapsed = 0;
@@ -129,12 +276,16 @@
     scrollY = 0;
 
     scenery = [];
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 15; i++) {
+      const r = rng();
+      const type = r < 0.4 ? 'tree' : r < 0.65 ? 'bush' : r < 0.85 ? 'sign' : 'rock';
       scenery.push({
+        type,
         side: rng() < 0.5 ? -1 : 1,
         y: rng() * LH,
-        size: 10 + rng() * 18,
+        size: 10 + rng() * 16,
         depth: 0.5 + rng() * 0.4,
+        seed: rng(),
       });
     }
   }
@@ -144,7 +295,11 @@
 
   function shiftLane(delta) {
     if (gameState !== STATE.PLAYING) return;
-    player.targetLane = Math.max(0, Math.min(LANE_COUNT - 1, player.targetLane + delta));
+    const newLane = Math.max(0, Math.min(LANE_COUNT - 1, player.targetLane + delta));
+    if (newLane !== player.targetLane) {
+      player.targetLane = newLane;
+      Sound.laneSwitch();
+    }
   }
 
   window.addEventListener('keydown', (e) => {
@@ -215,6 +370,8 @@
   // ---------- UI wiring ----------
   diffButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
+      Sound.ensureCtx();
+      Sound.uiClick();
       diffButtons.forEach((b) => b.classList.remove('selected'));
       btn.classList.add('selected');
       selectedDiff = btn.dataset.diff;
@@ -228,20 +385,27 @@
 
   function startGame() {
     resetGame();
-    gameState = STATE.PLAYING;
+    gameState = STATE.COUNTDOWN;
+    countdownIndex = 0;
+    countdownElapsed = 0;
     showScreen(null);
     hud.classList.remove('hidden');
-    pauseBtn.classList.remove('hidden');
+    pauseBtn.classList.add('hidden');
     bestValueEl.textContent = getBest(selectedDiff);
+    Sound.ensureCtx();
+    Sound.startEngine();
+    Sound.countdownBeep(false);
   }
 
   function togglePause() {
     if (gameState === STATE.PLAYING) {
       gameState = STATE.PAUSED;
       showScreen(pauseScreen);
+      Sound.pauseAll();
     } else if (gameState === STATE.PAUSED) {
       gameState = STATE.PLAYING;
       showScreen(null);
+      Sound.resumeAll();
     }
   }
 
@@ -249,6 +413,7 @@
     gameState = STATE.GAMEOVER;
     hud.classList.add('hidden');
     pauseBtn.classList.add('hidden');
+    Sound.stopEngine();
     const score = Math.floor(distance);
     const best = getBest(selectedDiff);
     const isNew = score > best;
@@ -261,19 +426,27 @@
     showScreen(gameOverScreen);
   }
 
-  startBtn.addEventListener('click', startGame);
-  resumeBtn.addEventListener('click', togglePause);
-  pauseBtn.addEventListener('click', togglePause);
+  startBtn.addEventListener('click', () => { Sound.ensureCtx(); Sound.uiClick(); startGame(); });
+  resumeBtn.addEventListener('click', () => { Sound.uiClick(); togglePause(); });
+  pauseBtn.addEventListener('click', () => { Sound.uiClick(); togglePause(); });
   quitBtn.addEventListener('click', () => {
+    Sound.uiClick();
+    Sound.stopEngine();
+    Sound.resumeAll();
     gameState = STATE.MENU;
     hud.classList.add('hidden');
     pauseBtn.classList.add('hidden');
     showScreen(startScreen);
   });
-  retryBtn.addEventListener('click', startGame);
+  retryBtn.addEventListener('click', () => { Sound.uiClick(); startGame(); });
   menuBtn.addEventListener('click', () => {
+    Sound.uiClick();
     gameState = STATE.MENU;
     showScreen(startScreen);
+  });
+  muteBtn.addEventListener('click', () => {
+    Sound.toggleMuted();
+    updateMuteIcon();
   });
 
   // ---------- Spawning ----------
@@ -321,6 +494,8 @@
 
     const speed = Math.min(cfg.maxSpeed, cfg.baseSpeed + cfg.speedRamp * elapsed);
     const spawnInterval = Math.max(cfg.minSpawnInterval, cfg.spawnInterval - cfg.spawnRampMs * 1000 * (elapsed / 1000) * 0.06);
+
+    Sound.updateEngine(speed / cfg.maxSpeed);
 
     distance += (speed * dt) / 60;
     scrollY = (scrollY + speed * dt) % 9999;
@@ -376,6 +551,7 @@
         if (c.lane !== player.lane && lateralGap < LANE_WIDTH * 1.15) {
           distance += 18;
           popups.push({ x: player.x, y: PLAYER_Y - 60, text: '+close call', life: 0.8, color: '#35d488' });
+          Sound.nearMiss();
         }
       }
 
@@ -414,6 +590,8 @@
 
   function crash() {
     shake = 1;
+    Sound.crash();
+    Sound.stopEngine();
     for (let i = 0; i < 26; i++) {
       const ang = rng() * Math.PI * 2;
       const spd = 60 + rng() * 220;
@@ -490,6 +668,54 @@
     ctx.restore();
   }
 
+  function drawSceneryItem(s, x, y) {
+    ctx.save();
+    ctx.translate(x, y);
+    switch (s.type) {
+      case 'tree': {
+        ctx.fillStyle = '#5c4326';
+        ctx.fillRect(-3, s.size * 0.25, 6, s.size * 0.9);
+        ctx.fillStyle = '#2e7d43';
+        ctx.beginPath(); ctx.arc(0, -s.size * 0.1, s.size, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#37914e';
+        ctx.beginPath(); ctx.arc(-s.size * 0.4, s.size * 0.1, s.size * 0.62, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(s.size * 0.4, s.size * 0.1, s.size * 0.62, 0, Math.PI * 2); ctx.fill();
+        break;
+      }
+      case 'bush': {
+        ctx.fillStyle = 'rgba(32, 84, 47, 0.8)';
+        ctx.beginPath(); ctx.arc(0, 0, s.size * 0.75, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(s.size * 0.5, s.size * 0.2, s.size * 0.5, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(-s.size * 0.5, s.size * 0.15, s.size * 0.45, 0, Math.PI * 2); ctx.fill();
+        break;
+      }
+      case 'rock': {
+        ctx.fillStyle = '#7c7f85';
+        ctx.beginPath();
+        ctx.ellipse(0, 0, s.size * 0.85, s.size * 0.55, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,0.16)';
+        ctx.beginPath();
+        ctx.ellipse(-s.size * 0.2, -s.size * 0.15, s.size * 0.32, s.size * 0.18, 0, 0, Math.PI * 2);
+        ctx.fill();
+        break;
+      }
+      case 'sign': {
+        ctx.fillStyle = '#8a8f98';
+        ctx.fillRect(-2, -4, 4, s.size * 1.7);
+        ctx.fillStyle = s.seed < 0.5 ? '#2f6fe0' : '#e0b02f';
+        drawRoundedRect(-14, -s.size * 1.5, 28, 22, 4);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+        ctx.lineWidth = 1.5;
+        drawRoundedRect(-14, -s.size * 1.5, 28, 22, 4);
+        ctx.stroke();
+        break;
+      }
+    }
+    ctx.restore();
+  }
+
   function drawRoad() {
     // grass
     const grassGrad = ctx.createLinearGradient(0, 0, 0, LH);
@@ -498,14 +724,11 @@
     ctx.fillStyle = grassGrad;
     ctx.fillRect(0, 0, LW, LH);
 
-    // scenery (parallax trees/bushes)
+    // scenery (parallax trees, bushes, signs, rocks)
     for (const s of scenery) {
-      const y = ((s.y + sceneryScrollY * s.depth) % (LH + 60)) - 30;
-      const x = s.side < 0 ? ROAD_MARGIN - 20 - s.size * 0.6 : LW - ROAD_MARGIN + 20 + s.size * 0.6;
-      ctx.fillStyle = 'rgba(20, 50, 28, 0.55)';
-      ctx.beginPath();
-      ctx.arc(x, y, s.size, 0, Math.PI * 2);
-      ctx.fill();
+      const y = ((s.y + sceneryScrollY * s.depth) % (LH + 80)) - 40;
+      const x = s.side < 0 ? ROAD_MARGIN - 22 - s.size * 0.7 : LW - ROAD_MARGIN + 22 + s.size * 0.7;
+      drawSceneryItem(s, x, y);
     }
 
     // asphalt
@@ -559,7 +782,7 @@
     }
 
     // player
-    if (gameState === STATE.PLAYING || gameState === STATE.PAUSED || String(gameState).startsWith(STATE.GAMEOVER)) {
+    if (gameState === STATE.COUNTDOWN || gameState === STATE.PLAYING || gameState === STATE.PAUSED || String(gameState).startsWith(STATE.GAMEOVER)) {
       drawCar(player.x, PLAYER_Y, player.w, player.h, PLAYER_COLOR, player.tilt || 0);
     }
 
@@ -581,7 +804,34 @@
     }
     ctx.globalAlpha = 1;
 
+    if (gameState === STATE.COUNTDOWN) {
+      drawCountdown();
+    }
+
     ctx.restore();
+  }
+
+  function drawCountdown() {
+    const label = COUNTDOWN_STEPS[countdownIndex];
+    if (!label) return;
+    const t = countdownElapsed / COUNTDOWN_STEP_TIME;
+    const scale = 1.5 - Math.min(1, t * 2.5) * 0.5;
+    const alpha = t > 0.75 ? Math.max(0, 1 - (t - 0.75) / 0.25) : 1;
+
+    ctx.save();
+    ctx.translate(LW / 2, LH / 2);
+    ctx.scale(scale, scale);
+    ctx.globalAlpha = alpha;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '900 96px -apple-system, sans-serif';
+    ctx.fillStyle = label === 'GO' ? '#35d488' : '#ffce45';
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    ctx.lineWidth = 6;
+    ctx.strokeText(label, 0, 0);
+    ctx.fillText(label, 0, 0);
+    ctx.restore();
+    ctx.globalAlpha = 1;
   }
 
   // ---------- Resize handling (crisp + responsive) ----------
@@ -602,7 +852,19 @@
     const dt = Math.min(0.05, (now - lastTime) / 1000);
     lastTime = now;
 
-    if (gameState === STATE.PLAYING) {
+    if (gameState === STATE.COUNTDOWN) {
+      countdownElapsed += dt;
+      if (countdownElapsed >= COUNTDOWN_STEP_TIME) {
+        countdownElapsed -= COUNTDOWN_STEP_TIME;
+        countdownIndex++;
+        if (countdownIndex >= COUNTDOWN_STEPS.length) {
+          gameState = STATE.PLAYING;
+          pauseBtn.classList.remove('hidden');
+        } else {
+          Sound.countdownBeep(countdownIndex === COUNTDOWN_STEPS.length - 1);
+        }
+      }
+    } else if (gameState === STATE.PLAYING) {
       update(dt);
     } else if (String(gameState).startsWith(STATE.GAMEOVER)) {
       // still animate particles during crash freeze-frame
@@ -623,6 +885,7 @@
     resize();
     resetGame();
     bestValueEl.textContent = getBest(selectedDiff);
+    updateMuteIcon();
     showScreen(startScreen);
     requestAnimationFrame((t) => { lastTime = t; requestAnimationFrame(loop); });
   }

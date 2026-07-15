@@ -90,8 +90,6 @@ canvas#game {
 .icon-btn {
   position: absolute;
   top: max(14px, env(safe-area-inset-top));
-  right: 22px;
-  transform: translateY(46px);
   width: 34px;
   height: 34px;
   border-radius: 10px;
@@ -101,6 +99,25 @@ canvas#game {
   font-size: 13px;
   cursor: pointer;
   backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.icon-btn.pos-tr {
+  right: 22px;
+  transform: translateY(46px);
+}
+
+.icon-btn.pos-tl {
+  left: 22px;
+  transform: translateY(46px);
+}
+
+.icon-btn svg {
+  width: 16px;
+  height: 16px;
 }
 
 /* ---------- Overlays ---------- */
