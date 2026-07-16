@@ -851,6 +851,14 @@
   }
 
   function draw() {
+    // Clear the full physical pixel buffer regardless of the current logical
+    // transform, so a stale/mismatched transform (e.g. from a mobile browser
+    // resizing its viewport mid-frame) can never leave old pixels on screen.
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+
     ctx.save();
     if (shake > 0) {
       const mag = shake * 10;
@@ -1022,7 +1030,18 @@
   }
 
   // ---------- Resize handling (crisp + responsive) ----------
+  // iOS Safari's collapsing/expanding address bar changes the real visible
+  // viewport height without CSS height:100% tracking it reliably, which can
+  // leave the canvas's backing buffer briefly out of sync with its on-screen
+  // box. Pin the body height to visualViewport (when available) so layout
+  // always matches what's actually visible, then resize the canvas buffer.
+  function syncViewportHeight() {
+    const vh = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+    document.body.style.height = vh + 'px';
+  }
+
   function resize() {
+    syncViewportHeight();
     const rect = canvas.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
     const scaleFactor = rect.width / LW;
@@ -1032,6 +1051,10 @@
   }
   window.addEventListener('resize', resize);
   window.addEventListener('orientationchange', resize);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', resize);
+    window.visualViewport.addEventListener('scroll', resize);
+  }
 
   // ---------- Main loop ----------
   let lastTime = performance.now();
