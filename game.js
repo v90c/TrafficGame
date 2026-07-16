@@ -63,7 +63,6 @@
 
   // ---------- Lane squeeze events (random temporary lane closures) ----------
   const SQUEEZE_OPEN_PAIRS = [[0, 1], [1, 2], [2, 3]];
-  const SQUEEZE_WARNING_TIME = 1.1;
   const SQUEEZE_CLEARING_TIME = 1.2;
   const BARRIER_H = 130;
   const BARRIER_GAP = 6;
@@ -160,11 +159,6 @@
       blip({ freq: 140, freqEnd: 40, duration: 0.4, type: 'sawtooth', gainPeak: 0.35, delay: 0.02 });
     }
 
-    function squeezeWarning() {
-      blip({ freq: 480, duration: 0.12, type: 'square', gainPeak: 0.2 });
-      blip({ freq: 480, duration: 0.12, type: 'square', gainPeak: 0.2, delay: 0.22 });
-    }
-
     function startEngine() {
       const c = ensureCtx();
       if (!c || engineOsc) return;
@@ -201,7 +195,7 @@
 
     return {
       ensureCtx, isMuted, setMuted, toggleMuted,
-      laneSwitch, nearMiss, uiClick, countdownBeep, crash, squeezeWarning,
+      laneSwitch, nearMiss, uiClick, countdownBeep, crash,
       startEngine, updateEngine, stopEngine, pauseAll, resumeAll,
     };
   })();
@@ -267,7 +261,7 @@
   let scenery = [];
   let rng = Math.random;
 
-  // squeeze event state: 'idle' | 'warning' | 'active' | 'clearing'
+  // squeeze event state: 'idle' | 'active' | 'clearing'
   let squeezeState = 'idle';
   let squeezeStateTimer = 0;
   let squeezeOpenLanes = [0, 1, 2, 3];
@@ -533,16 +527,6 @@
         const openPair = SQUEEZE_OPEN_PAIRS[Math.floor(rng() * SQUEEZE_OPEN_PAIRS.length)];
         squeezeOpenLanes = openPair;
         squeezeClosedLanes = [0, 1, 2, 3].filter((l) => !openPair.includes(l));
-        squeezeState = 'warning';
-        squeezeStateTimer = SQUEEZE_WARNING_TIME;
-        Sound.squeezeWarning();
-      }
-      return;
-    }
-
-    if (squeezeState === 'warning') {
-      squeezeStateTimer -= dt;
-      if (squeezeStateTimer <= 0) {
         squeezeState = 'active';
         squeezeStateTimer = 6 + rng() * 3;
         // seed an unbroken wall of barrier segments above the screen in each closed lane
@@ -845,14 +829,6 @@
       ctx.fillRect(tx, ty, 2, 10);
     }
 
-    // lane-closure warning tint (flashes over lanes about to be barricaded)
-    if (squeezeState === 'warning' && Math.floor(squeezeStateTimer * 8) % 2 === 0) {
-      ctx.fillStyle = 'rgba(255, 206, 69, 0.22)';
-      for (const lane of squeezeClosedLanes) {
-        ctx.fillRect(ROAD_MARGIN + LANE_WIDTH * lane, 0, LANE_WIDTH, LH);
-      }
-    }
-
     // road edge lines
     ctx.strokeStyle = '#f2e6b1';
     ctx.lineWidth = 4;
@@ -918,10 +894,6 @@
     }
     ctx.globalAlpha = 1;
 
-    if (gameState === STATE.PLAYING) {
-      drawSqueezeBanner();
-    }
-
     if (gameState === STATE.COUNTDOWN) {
       drawTrafficLight();
       drawCountdown();
@@ -961,28 +933,6 @@
     drawRoundedRect(-w / 2, -h / 2, w, h, 8);
     ctx.stroke();
 
-    ctx.restore();
-  }
-
-  function drawSqueezeBanner() {
-    if (squeezeState !== 'warning') return;
-    if (Math.floor(squeezeStateTimer * 8) % 2 !== 0) return;
-
-    ctx.save();
-    const bw = 260, bh = 40;
-    const bx = LW / 2 - bw / 2, by = 100;
-    ctx.fillStyle = 'rgba(20, 10, 4, 0.85)';
-    drawRoundedRect(bx, by, bw, bh, 10);
-    ctx.fill();
-    ctx.strokeStyle = '#ffce45';
-    ctx.lineWidth = 2;
-    drawRoundedRect(bx, by, bw, bh, 10);
-    ctx.stroke();
-    ctx.fillStyle = '#ffce45';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = '800 15px -apple-system, sans-serif';
-    ctx.fillText('LANES CLOSING AHEAD', LW / 2, by + bh / 2);
     ctx.restore();
   }
 
