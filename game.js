@@ -231,13 +231,20 @@
       sirenOsc = null; sirenGain = null; sirenLFO = null; sirenLFOGain = null;
     }
 
+    function updateSirenIntensity(proximity) {
+      if (!sirenGain || !sirenLFO || !ctx) return;
+      const p = Math.max(0, Math.min(1, proximity));
+      sirenGain.gain.setTargetAtTime(0.08 + p * 0.16, ctx.currentTime, 0.2);
+      sirenLFO.frequency.setTargetAtTime(0.5 + p * 0.7, ctx.currentTime, 0.3);
+    }
+
     function pauseAll() { if (ctx && ctx.state === 'running') ctx.suspend(); }
     function resumeAll() { if (ctx && ctx.state === 'suspended') ctx.resume(); }
 
     return {
       ensureCtx, isMuted, setMuted, toggleMuted,
       laneSwitch, nearMiss, uiClick, countdownBeep, crash, bump,
-      startEngine, updateEngine, stopEngine, startSiren, stopSiren, pauseAll, resumeAll,
+      startEngine, updateEngine, stopEngine, startSiren, stopSiren, updateSirenIntensity, pauseAll, resumeAll,
     };
   })();
 
@@ -315,7 +322,11 @@
   let playerBounce = 0; // 0..1, decays after hitting a hump (jump/lift arc)
 
   const POLICE_SCORE_THRESHOLD = 300;
+  const POLICE_GAP_MIN = 30;   // deep inside this = overlapping the player (caught)
+  const POLICE_GAP_MAX = 140;
+  const POLICE_GAP_SAFE = 65;  // roughly the minimum gap that still avoids overlap
   let policeTriggered = false; // once true, the chase has started for this run
+  let policeGap = 90;          // current following distance; shrinks if you go passive
 
   function resetGame() {
     const cfg = DIFFICULTIES[selectedDiff];
@@ -349,6 +360,7 @@
     playerBounce = 0;
 
     policeTriggered = false;
+    policeGap = 90;
 
     scenery = [];
     for (let i = 0; i < 15; i++) {
@@ -375,6 +387,9 @@
     if (newLane !== player.targetLane) {
       player.targetLane = newLane;
       Sound.laneSwitch();
+      if (policeTriggered) {
+        policeGap = Math.min(POLICE_GAP_MAX, policeGap + 22); // active dodging shakes them off
+      }
     }
   }
 
@@ -684,11 +699,16 @@
     for (let i = traffic.length - 1; i >= 0; i--) {
       const c = traffic[i];
       if (c.key === 'police') {
-        // chases up from behind, settles into a tailing gap, and steers to
-        // follow whichever lane the player is currently in
-        const targetY = PLAYER_Y + 90;
+        // Chases up from behind and steers to follow whichever lane the
+        // player is in. The following gap shrinks the longer you stay in one
+        // lane (shiftLane() pushes it back out on every dodge) -- go fully
+        // passive for too long and it closes enough to actually catch you.
+        policeGap = Math.max(POLICE_GAP_MIN, policeGap - dt * 9);
+        const targetY = PLAYER_Y + policeGap;
         c.y += (targetY - c.y) * Math.min(1, 3 * dt);
         c.x += (laneX(player.lane) - c.x) * Math.min(1, 5 * dt);
+        const danger = 1 - Math.max(0, Math.min(1, (policeGap - POLICE_GAP_MIN) / (POLICE_GAP_SAFE - POLICE_GAP_MIN)));
+        Sound.updateSirenIntensity(danger);
       } else {
         c.y += speed * c.speedMul * dt;
       }
