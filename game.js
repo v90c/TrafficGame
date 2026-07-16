@@ -62,6 +62,9 @@
   const TRAFFIC_COLORS = ['#e94f4f', '#4f8ce9', '#e9a94f', '#8a5fd6', '#d6d6d6', '#4f4f4f', '#e94f9d', '#5fd68a'];
   const PLAYER_COLOR = '#3ecfff';
 
+  // ---------- Speed humps (non-fatal hazard: jolt + brief slowdown, not a crash) ----------
+  const HUMP_H = 20;
+
   // ---------- Lane squeeze events (random temporary lane closures) ----------
   // Always keep the two center lanes open so the road narrows symmetrically
   // toward the middle instead of shifting left or right.
@@ -159,6 +162,11 @@
       blip({ freq: 140, freqEnd: 40, duration: 0.4, type: 'sawtooth', gainPeak: 0.35, delay: 0.02 });
     }
 
+    function bump() {
+      blip({ freq: 95, freqEnd: 50, duration: 0.12, type: 'sine', gainPeak: 0.32 });
+      noiseBurst({ duration: 0.08, gainPeak: 0.22, filterFreq: 500 });
+    }
+
     function startEngine() {
       const c = ensureCtx();
       if (!c || engineOsc) return;
@@ -195,7 +203,7 @@
 
     return {
       ensureCtx, isMuted, setMuted, toggleMuted,
-      laneSwitch, nearMiss, uiClick, countdownBeep, crash,
+      laneSwitch, nearMiss, uiClick, countdownBeep, crash, bump,
       startEngine, updateEngine, stopEngine, pauseAll, resumeAll,
     };
   })();
@@ -270,6 +278,10 @@
   let squeezeAnimMin = 0;            // animated (float) road-width bounds, eases toward
   let squeezeAnimMax = LANE_COUNT - 1; // the target open-lane range instead of snapping
 
+  let humpTimer = 0;         // ms until next speed hump spawns
+  let playerBounce = 0;      // 0..1, decays after hitting a hump (squash/stretch)
+  let speedPenaltyTimer = 0; // seconds remaining of post-hump slowdown
+
   function resetGame() {
     const cfg = DIFFICULTIES[selectedDiff];
     player = {
@@ -297,6 +309,10 @@
     nextSqueezeAt = 10 + rng() * 8;
     squeezeAnimMin = 0;
     squeezeAnimMax = LANE_COUNT - 1;
+
+    humpTimer = 2500 + rng() * 2000;
+    playerBounce = 0;
+    speedPenaltyTimer = 0;
 
     scenery = [];
     for (let i = 0; i < 15; i++) {
@@ -569,7 +585,10 @@
     const cfg = DIFFICULTIES[selectedDiff];
     elapsed += dt;
 
-    const speed = Math.min(cfg.maxSpeed, cfg.baseSpeed + cfg.speedRamp * elapsed);
+    speedPenaltyTimer = Math.max(0, speedPenaltyTimer - dt);
+    playerBounce = Math.max(0, playerBounce - dt * 4);
+    const speedPenaltyMul = speedPenaltyTimer > 0 ? 0.55 : 1;
+    const speed = Math.min(cfg.maxSpeed, cfg.baseSpeed + cfg.speedRamp * elapsed) * speedPenaltyMul;
     const spawnInterval = Math.max(cfg.minSpawnInterval, cfg.spawnInterval - cfg.spawnRampMs * 1000 * (elapsed / 1000) * 0.06);
 
     Sound.updateEngine(speed / cfg.maxSpeed);
@@ -596,6 +615,24 @@
       spawnTimer = spawnInterval;
     }
 
+    humpTimer -= dt * 1000;
+    if (humpTimer <= 0) {
+      const allowedLanes = squeezeState === 'idle' ? [0, 1, 2, 3] : squeezeOpenLanes;
+      const lane = allowedLanes[Math.floor(rng() * allowedLanes.length)];
+      traffic.push({
+        key: 'hump',
+        lane,
+        x: laneX(lane),
+        y: -HUMP_H - rng() * 40,
+        w: LANE_WIDTH * 0.78,
+        h: HUMP_H,
+        speedMul: 1,
+        scored: true, // humps don't trigger near-miss scoring
+        hit: false,
+      });
+      humpTimer = 3200 + rng() * 2600;
+    }
+
     // move traffic + collisions + near-miss scoring
     const pRect = {
       x: player.x - player.w * 0.36,
@@ -618,7 +655,12 @@
       const overlap = pRect.x < cRect.x + cRect.w && pRect.x + pRect.w > cRect.x &&
                        pRect.y < cRect.y + cRect.h && pRect.y + pRect.h > cRect.y;
 
-      if (overlap) {
+      if (overlap && c.key === 'hump') {
+        if (!c.hit) {
+          c.hit = true;
+          hitSpeedHump();
+        }
+      } else if (overlap) {
         crash();
         return;
       }
@@ -688,6 +730,13 @@
     gameState = STATE.GAMEOVER + '_pending';
   }
 
+  function hitSpeedHump() {
+    Sound.bump();
+    shake = Math.max(shake, 0.4);
+    playerBounce = 1;
+    speedPenaltyTimer = 0.7;
+  }
+
   // ---------- Drawing ----------
   function drawRoundedRect(x, y, w, h, r) {
     ctx.beginPath();
@@ -699,10 +748,15 @@
     ctx.closePath();
   }
 
-  function drawCar(x, y, w, h, color, tilt) {
+  function drawCar(x, y, w, h, color, tilt, squash = 0) {
     ctx.save();
     ctx.translate(x, y);
     if (tilt) ctx.rotate(tilt);
+    if (squash > 0) {
+      // brief squash/stretch "boing" after hitting a speed hump
+      const wobble = Math.sin(squash * Math.PI);
+      ctx.scale(1 + wobble * 0.18, 1 - wobble * 0.18);
+    }
 
     // shadow
     ctx.fillStyle = 'rgba(0,0,0,0.28)';
@@ -869,7 +923,9 @@
 
     // traffic
     for (const c of traffic) {
-      if (c.key === 'moto') {
+      if (c.key === 'hump') {
+        drawSpeedHump(c.x, c.y, c.w, c.h);
+      } else if (c.key === 'moto') {
         drawMotorcycle(c.x, c.y, c.w, c.h, c.color);
       } else {
         drawCar(c.x, c.y, c.w, c.h, c.color, 0);
@@ -878,7 +934,7 @@
 
     // player
     if (gameState === STATE.COUNTDOWN || gameState === STATE.PLAYING || gameState === STATE.PAUSED || String(gameState).startsWith(STATE.GAMEOVER)) {
-      drawCar(player.x, PLAYER_Y, player.w, player.h, PLAYER_COLOR, player.tilt || 0);
+      drawCar(player.x, PLAYER_Y, player.w, player.h, PLAYER_COLOR, player.tilt || 0, playerBounce);
     }
 
     // particles
@@ -947,6 +1003,45 @@
     // taillight
     ctx.fillStyle = '#ff4d4d';
     ctx.fillRect(-w * 0.12, h / 2 - 5, w * 0.24, 3);
+
+    ctx.restore();
+  }
+
+  function drawSpeedHump(x, y, w, h) {
+    ctx.save();
+    ctx.translate(x, y);
+
+    // shadow (suggests a raised ridge)
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    drawRoundedRect(-w / 2 + 2, -h / 2 + 3, w, h, h * 0.4);
+    ctx.fill();
+
+    // body with diagonal hazard stripes, clipped to a rounded bar
+    drawRoundedRect(-w / 2, -h / 2, w, h, h * 0.4);
+    ctx.save();
+    ctx.clip();
+    ctx.fillStyle = '#f2b400';
+    ctx.fillRect(-w / 2, -h / 2, w, h);
+    ctx.fillStyle = '#1a1a1a';
+    const stripeW = 10;
+    for (let sx = -w / 2 - h; sx < w / 2 + h; sx += stripeW * 2) {
+      ctx.beginPath();
+      ctx.moveTo(sx, -h / 2);
+      ctx.lineTo(sx + stripeW, -h / 2);
+      ctx.lineTo(sx + stripeW + h, h / 2);
+      ctx.lineTo(sx + h, h / 2);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // top highlight edge (raised look)
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(-w / 2 + 4, -h / 2 + 2);
+    ctx.lineTo(w / 2 - 4, -h / 2 + 2);
+    ctx.stroke();
 
     ctx.restore();
   }
