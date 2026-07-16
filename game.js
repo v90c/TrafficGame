@@ -61,6 +61,13 @@
   const TRAFFIC_COLORS = ['#e94f4f', '#4f8ce9', '#e9a94f', '#8a5fd6', '#d6d6d6', '#4f4f4f', '#e94f9d', '#5fd68a'];
   const PLAYER_COLOR = '#3ecfff';
 
+  // ---------- Lane squeeze events (random temporary lane closures) ----------
+  const SQUEEZE_OPEN_PAIRS = [[0, 1], [1, 2], [2, 3]];
+  const SQUEEZE_WARNING_TIME = 1.1;
+  const SQUEEZE_CLEARING_TIME = 1.2;
+  const BARRIER_H = 130;
+  const BARRIER_GAP = 6;
+
   // ---------- Audio (synthesized with Web Audio API, no external assets) ----------
   const Sound = (() => {
     let ctx = null;
@@ -153,6 +160,11 @@
       blip({ freq: 140, freqEnd: 40, duration: 0.4, type: 'sawtooth', gainPeak: 0.35, delay: 0.02 });
     }
 
+    function squeezeWarning() {
+      blip({ freq: 480, duration: 0.12, type: 'square', gainPeak: 0.2 });
+      blip({ freq: 480, duration: 0.12, type: 'square', gainPeak: 0.2, delay: 0.22 });
+    }
+
     function startEngine() {
       const c = ensureCtx();
       if (!c || engineOsc) return;
@@ -189,7 +201,7 @@
 
     return {
       ensureCtx, isMuted, setMuted, toggleMuted,
-      laneSwitch, nearMiss, uiClick, countdownBeep, crash,
+      laneSwitch, nearMiss, uiClick, countdownBeep, crash, squeezeWarning,
       startEngine, updateEngine, stopEngine, pauseAll, resumeAll,
     };
   })();
@@ -255,6 +267,13 @@
   let scenery = [];
   let rng = Math.random;
 
+  // squeeze event state: 'idle' | 'warning' | 'active' | 'clearing'
+  let squeezeState = 'idle';
+  let squeezeStateTimer = 0;
+  let squeezeOpenLanes = [0, 1, 2, 3];
+  let squeezeClosedLanes = [];
+  let nextSqueezeAt = 0;
+
   function resetGame() {
     const cfg = DIFFICULTIES[selectedDiff];
     player = {
@@ -274,6 +293,12 @@
     laneLastY = new Array(LANE_COUNT).fill(-9999);
     shake = 0;
     scrollY = 0;
+
+    squeezeState = 'idle';
+    squeezeStateTimer = 0;
+    squeezeOpenLanes = [0, 1, 2, 3];
+    squeezeClosedLanes = [];
+    nextSqueezeAt = 10 + rng() * 8;
 
     scenery = [];
     for (let i = 0; i < 15; i++) {
@@ -461,8 +486,9 @@
   }
 
   function trySpawnWave(cfg, speed) {
-    const laneOrder = [0, 1, 2, 3].sort(() => rng() - 0.5);
-    const maxToSpawn = Math.min(cfg.maxSimultaneous, LANE_COUNT - 1); // always leave >=1 lane open
+    const allowedLanes = squeezeState === 'idle' ? [0, 1, 2, 3] : squeezeOpenLanes;
+    const laneOrder = allowedLanes.slice().sort(() => rng() - 0.5);
+    const maxToSpawn = Math.min(cfg.maxSimultaneous, Math.max(1, allowedLanes.length - 1)); // always leave >=1 lane open
     const howMany = 1 + Math.floor(rng() * maxToSpawn);
     let spawned = 0;
 
@@ -487,6 +513,81 @@
     }
   }
 
+  function makeBarrier(lane, y) {
+    return {
+      type: 'barrier',
+      lane,
+      x: laneX(lane),
+      y,
+      w: LANE_WIDTH * 0.82,
+      h: BARRIER_H,
+      speedMul: 1,
+      scored: true, // barriers never trigger near-miss scoring
+    };
+  }
+
+  // ---------- Lane squeeze state machine ----------
+  function updateSqueeze(dt) {
+    if (squeezeState === 'idle') {
+      if (elapsed >= nextSqueezeAt) {
+        const openPair = SQUEEZE_OPEN_PAIRS[Math.floor(rng() * SQUEEZE_OPEN_PAIRS.length)];
+        squeezeOpenLanes = openPair;
+        squeezeClosedLanes = [0, 1, 2, 3].filter((l) => !openPair.includes(l));
+        squeezeState = 'warning';
+        squeezeStateTimer = SQUEEZE_WARNING_TIME;
+        Sound.squeezeWarning();
+      }
+      return;
+    }
+
+    if (squeezeState === 'warning') {
+      squeezeStateTimer -= dt;
+      if (squeezeStateTimer <= 0) {
+        squeezeState = 'active';
+        squeezeStateTimer = 6 + rng() * 3;
+        // seed an unbroken wall of barrier segments above the screen in each closed lane
+        for (const lane of squeezeClosedLanes) {
+          let topY = -40;
+          for (let i = 0; i < 8; i++) {
+            traffic.push(makeBarrier(lane, topY));
+            topY -= (BARRIER_H + BARRIER_GAP);
+          }
+        }
+      }
+      return;
+    }
+
+    if (squeezeState === 'active') {
+      squeezeStateTimer -= dt;
+      // keep replenishing the wall so there's never a gap to sneak through
+      for (const lane of squeezeClosedLanes) {
+        let minY = Infinity;
+        for (const c of traffic) {
+          if (c.type === 'barrier' && c.lane === lane && c.y < minY) minY = c.y;
+        }
+        if (minY === Infinity) minY = 0;
+        if (minY > -(BARRIER_H * 2 + BARRIER_GAP)) {
+          traffic.push(makeBarrier(lane, minY - BARRIER_H - BARRIER_GAP));
+        }
+      }
+      if (squeezeStateTimer <= 0) {
+        squeezeState = 'clearing';
+        squeezeStateTimer = SQUEEZE_CLEARING_TIME;
+      }
+      return;
+    }
+
+    if (squeezeState === 'clearing') {
+      squeezeStateTimer -= dt;
+      if (squeezeStateTimer <= 0) {
+        squeezeState = 'idle';
+        squeezeOpenLanes = [0, 1, 2, 3];
+        squeezeClosedLanes = [];
+        nextSqueezeAt = elapsed + 14 + rng() * 8;
+      }
+    }
+  }
+
   // ---------- Update ----------
   function update(dt) {
     const cfg = DIFFICULTIES[selectedDiff];
@@ -496,6 +597,7 @@
     const spawnInterval = Math.max(cfg.minSpawnInterval, cfg.spawnInterval - cfg.spawnRampMs * 1000 * (elapsed / 1000) * 0.06);
 
     Sound.updateEngine(speed / cfg.maxSpeed);
+    updateSqueeze(dt);
 
     distance += (speed * dt) / 60;
     scrollY = (scrollY + speed * dt) % 9999;
@@ -743,6 +845,14 @@
       ctx.fillRect(tx, ty, 2, 10);
     }
 
+    // lane-closure warning tint (flashes over lanes about to be barricaded)
+    if (squeezeState === 'warning' && Math.floor(squeezeStateTimer * 8) % 2 === 0) {
+      ctx.fillStyle = 'rgba(255, 206, 69, 0.22)';
+      for (const lane of squeezeClosedLanes) {
+        ctx.fillRect(ROAD_MARGIN + LANE_WIDTH * lane, 0, LANE_WIDTH, LH);
+      }
+    }
+
     // road edge lines
     ctx.strokeStyle = '#f2e6b1';
     ctx.lineWidth = 4;
@@ -778,7 +888,11 @@
 
     // traffic
     for (const c of traffic) {
-      drawCar(c.x, c.y, c.w, c.h, c.color, 0);
+      if (c.type === 'barrier') {
+        drawBarrier(c.x, c.y, c.w, c.h);
+      } else {
+        drawCar(c.x, c.y, c.w, c.h, c.color, 0);
+      }
     }
 
     // player
@@ -804,11 +918,71 @@
     }
     ctx.globalAlpha = 1;
 
+    if (gameState === STATE.PLAYING) {
+      drawSqueezeBanner();
+    }
+
     if (gameState === STATE.COUNTDOWN) {
       drawTrafficLight();
       drawCountdown();
     }
 
+    ctx.restore();
+  }
+
+  function drawBarrier(x, y, w, h) {
+    ctx.save();
+    ctx.translate(x, y);
+
+    ctx.fillStyle = 'rgba(0,0,0,0.28)';
+    drawRoundedRect(-w / 2 + 3, -h / 2 + 5, w, h, 8);
+    ctx.fill();
+
+    drawRoundedRect(-w / 2, -h / 2, w, h, 8);
+    ctx.save();
+    ctx.clip();
+    ctx.fillStyle = '#f2b400';
+    ctx.fillRect(-w / 2, -h / 2, w, h);
+    ctx.fillStyle = '#1a1a1a';
+    const stripeW = 14;
+    for (let sx = -w / 2 - h; sx < w / 2 + h; sx += stripeW * 2) {
+      ctx.beginPath();
+      ctx.moveTo(sx, -h / 2);
+      ctx.lineTo(sx + stripeW, -h / 2);
+      ctx.lineTo(sx + stripeW + h, h / 2);
+      ctx.lineTo(sx + h, h / 2);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+
+    ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+    ctx.lineWidth = 3;
+    drawRoundedRect(-w / 2, -h / 2, w, h, 8);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  function drawSqueezeBanner() {
+    if (squeezeState !== 'warning') return;
+    if (Math.floor(squeezeStateTimer * 8) % 2 !== 0) return;
+
+    ctx.save();
+    const bw = 260, bh = 40;
+    const bx = LW / 2 - bw / 2, by = 100;
+    ctx.fillStyle = 'rgba(20, 10, 4, 0.85)';
+    drawRoundedRect(bx, by, bw, bh, 10);
+    ctx.fill();
+    ctx.strokeStyle = '#ffce45';
+    ctx.lineWidth = 2;
+    drawRoundedRect(bx, by, bw, bh, 10);
+    ctx.stroke();
+    ctx.fillStyle = '#ffce45';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '800 15px -apple-system, sans-serif';
+    ctx.fillText('LANES CLOSING AHEAD', LW / 2, by + bh / 2);
     ctx.restore();
   }
 
