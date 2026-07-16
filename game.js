@@ -63,7 +63,9 @@
   const PLAYER_COLOR = '#3ecfff';
 
   // ---------- Lane squeeze events (random temporary lane closures) ----------
-  const SQUEEZE_OPEN_PAIRS = [[0, 1], [1, 2], [2, 3]];
+  // Always keep the two center lanes open so the road narrows symmetrically
+  // toward the middle instead of shifting left or right.
+  const SQUEEZE_OPEN_LANES = [1, 2];
 
   // ---------- Audio (synthesized with Web Audio API, no external assets) ----------
   const Sound = (() => {
@@ -522,9 +524,8 @@
   function updateSqueeze(dt) {
     if (squeezeState === 'idle') {
       if (elapsed >= nextSqueezeAt) {
-        const openPair = SQUEEZE_OPEN_PAIRS[Math.floor(rng() * SQUEEZE_OPEN_PAIRS.length)];
-        squeezeOpenLanes = openPair;
-        squeezeClosedLanes = [0, 1, 2, 3].filter((l) => !openPair.includes(l));
+        squeezeOpenLanes = SQUEEZE_OPEN_LANES;
+        squeezeClosedLanes = [0, 1, 2, 3].filter((l) => !squeezeOpenLanes.includes(l));
         squeezeState = 'active';
         squeezeStateTimer = 6 + rng() * 3;
 
