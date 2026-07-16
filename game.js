@@ -265,6 +265,8 @@
   let squeezeOpenLanes = [0, 1, 2, 3];
   let squeezeClosedLanes = [];
   let nextSqueezeAt = 0;
+  let squeezeAnimMin = 0;            // animated (float) road-width bounds, eases toward
+  let squeezeAnimMax = LANE_COUNT - 1; // the target open-lane range instead of snapping
 
   function resetGame() {
     const cfg = DIFFICULTIES[selectedDiff];
@@ -291,6 +293,8 @@
     squeezeOpenLanes = [0, 1, 2, 3];
     squeezeClosedLanes = [];
     nextSqueezeAt = 10 + rng() * 8;
+    squeezeAnimMin = 0;
+    squeezeAnimMax = LANE_COUNT - 1;
 
     scenery = [];
     for (let i = 0; i < 15; i++) {
@@ -548,6 +552,17 @@
     }
   }
 
+  // Eases the rendered road-width bounds toward the current target instead of
+  // snapping, so the 4-to-2-lane (and back) change reads as a smooth narrowing.
+  function updateSqueezeAnim(dt) {
+    const [targetMin, targetMax] = squeezeLaneBounds();
+    const lerpSpeed = 7;
+    squeezeAnimMin += (targetMin - squeezeAnimMin) * Math.min(1, lerpSpeed * dt);
+    squeezeAnimMax += (targetMax - squeezeAnimMax) * Math.min(1, lerpSpeed * dt);
+    if (Math.abs(targetMin - squeezeAnimMin) < 0.01) squeezeAnimMin = targetMin;
+    if (Math.abs(targetMax - squeezeAnimMax) < 0.01) squeezeAnimMax = targetMax;
+  }
+
   // ---------- Update ----------
   function update(dt) {
     const cfg = DIFFICULTIES[selectedDiff];
@@ -558,6 +573,7 @@
 
     Sound.updateEngine(speed / cfg.maxSpeed);
     updateSqueeze(dt);
+    updateSqueezeAnim(dt);
 
     distance += (speed * dt) / 60;
     scrollY = (scrollY + speed * dt) % 9999;
@@ -793,10 +809,9 @@
       drawSceneryItem(s, x, y);
     }
 
-    // asphalt (only spans the currently-open lanes -- narrows during a squeeze)
-    const [openMin, openMax] = squeezeLaneBounds();
-    const asphaltX = ROAD_MARGIN + LANE_WIDTH * openMin;
-    const asphaltW = LANE_WIDTH * (openMax - openMin + 1);
+    // asphalt (eases toward the currently-open lanes -- smoothly narrows/widens during a squeeze)
+    const asphaltX = ROAD_MARGIN + LANE_WIDTH * squeezeAnimMin;
+    const asphaltW = LANE_WIDTH * (squeezeAnimMax - squeezeAnimMin + 1);
 
     ctx.fillStyle = '#3a3f47';
     ctx.fillRect(asphaltX, 0, asphaltW, LH);
@@ -817,14 +832,15 @@
     ctx.moveTo(asphaltX + asphaltW, 0); ctx.lineTo(asphaltX + asphaltW, LH);
     ctx.stroke();
 
-    // lane dividers (dashed, scrolling) -- only between still-open lanes
+    // lane dividers (dashed, scrolling) -- only draw ones still within the asphalt
     ctx.strokeStyle = 'rgba(255,255,255,0.8)';
     ctx.lineWidth = 3;
     const dashLen = 26, gapLen = 22;
     ctx.setLineDash([dashLen, gapLen]);
     ctx.lineDashOffset = -scrollY;
-    for (let i = openMin + 1; i <= openMax; i++) {
+    for (let i = 1; i < LANE_COUNT; i++) {
       const x = ROAD_MARGIN + LANE_WIDTH * i;
+      if (x <= asphaltX + 2 || x >= asphaltX + asphaltW - 2) continue;
       ctx.beginPath();
       ctx.moveTo(x, -dashLen);
       ctx.lineTo(x, LH);
