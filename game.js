@@ -1031,11 +1031,24 @@
 
   // ---------- Resize handling (crisp + responsive) ----------
   function resize() {
-    const rect = canvas.getBoundingClientRect();
+    // Fit the fixed 480:720 game area inside whatever space #app actually has,
+    // computed entirely in JS -- avoids relying on CSS aspect-ratio's
+    // interaction with vh/dvh, which had sub-pixel rounding quirks on iOS
+    // Safari that let the canvas render a hair taller than intended.
+    const container = canvas.parentElement.getBoundingClientRect();
+    let cssW = container.width;
+    let cssH = cssW * (LH / LW);
+    if (cssH > container.height) {
+      cssH = container.height;
+      cssW = cssH * (LW / LH);
+    }
+    canvas.style.width = cssW + 'px';
+    canvas.style.height = cssH + 'px';
+
     const dpr = window.devicePixelRatio || 1;
-    const scaleFactor = rect.width / LW;
-    canvas.width = Math.round(rect.width * dpr);
-    canvas.height = Math.round(rect.height * dpr);
+    const scaleFactor = cssW / LW;
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
     ctx.setTransform(dpr * scaleFactor, 0, 0, dpr * scaleFactor, 0, 0);
   }
   window.addEventListener('resize', resize);
