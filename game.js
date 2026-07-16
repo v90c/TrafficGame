@@ -199,13 +199,45 @@
       engineOsc = null; engineGain = null; engineFilter = null;
     }
 
+    let sirenOsc = null, sirenGain = null, sirenLFO = null, sirenLFOGain = null;
+
+    function startSiren() {
+      const c = ensureCtx();
+      if (!c || sirenOsc) return;
+      sirenOsc = c.createOscillator();
+      sirenOsc.type = 'sine';
+      sirenOsc.frequency.value = 700;
+      sirenGain = c.createGain();
+      sirenGain.gain.value = 0.1;
+      sirenOsc.connect(sirenGain);
+      sirenGain.connect(masterGain);
+
+      sirenLFO = c.createOscillator();
+      sirenLFO.type = 'sine';
+      sirenLFO.frequency.value = 0.55; // wail rate
+      sirenLFOGain = c.createGain();
+      sirenLFOGain.gain.value = 220; // wail depth (Hz)
+      sirenLFO.connect(sirenLFOGain);
+      sirenLFOGain.connect(sirenOsc.frequency);
+
+      sirenOsc.start();
+      sirenLFO.start();
+    }
+
+    function stopSiren() {
+      if (!sirenOsc) return;
+      try { sirenOsc.stop(); sirenLFO.stop(); } catch (e) { /* already stopped */ }
+      sirenOsc.disconnect(); sirenGain.disconnect(); sirenLFO.disconnect(); sirenLFOGain.disconnect();
+      sirenOsc = null; sirenGain = null; sirenLFO = null; sirenLFOGain = null;
+    }
+
     function pauseAll() { if (ctx && ctx.state === 'running') ctx.suspend(); }
     function resumeAll() { if (ctx && ctx.state === 'suspended') ctx.resume(); }
 
     return {
       ensureCtx, isMuted, setMuted, toggleMuted,
       laneSwitch, nearMiss, uiClick, countdownBeep, crash, bump,
-      startEngine, updateEngine, stopEngine, pauseAll, resumeAll,
+      startEngine, updateEngine, stopEngine, startSiren, stopSiren, pauseAll, resumeAll,
     };
   })();
 
@@ -282,6 +314,9 @@
   let humpTimer = 0;         // ms until next speed hump spawns
   let playerBounce = 0; // 0..1, decays after hitting a hump (jump/lift arc)
 
+  const POLICE_SCORE_THRESHOLD = 300;
+  let policeTriggered = false; // once true, the chase has started for this run
+
   function resetGame() {
     const cfg = DIFFICULTIES[selectedDiff];
     player = {
@@ -312,6 +347,8 @@
 
     humpTimer = 2500 + rng() * 2000;
     playerBounce = 0;
+
+    policeTriggered = false;
 
     scenery = [];
     for (let i = 0; i < 15; i++) {
@@ -471,6 +508,7 @@
   quitBtn.addEventListener('click', () => {
     Sound.uiClick();
     Sound.stopEngine();
+    Sound.stopSiren();
     Sound.resumeAll();
     gameState = STATE.MENU;
     hud.classList.add('hidden');
@@ -596,6 +634,11 @@
     scrollY = (scrollY + speed * dt) % 9999;
     sceneryScrollY += speed * dt * 0.6;
 
+    if (!policeTriggered && distance >= POLICE_SCORE_THRESHOLD) {
+      policeTriggered = true;
+      spawnPolice();
+    }
+
     // player lane animation (smooth flick easing between lane centers)
     player.lane = player.targetLane;
     if (player._currentX === undefined) player._currentX = laneX(player.lane);
@@ -640,7 +683,15 @@
 
     for (let i = traffic.length - 1; i >= 0; i--) {
       const c = traffic[i];
-      c.y += speed * c.speedMul * dt;
+      if (c.key === 'police') {
+        // chases up from behind, settles into a tailing gap, and steers to
+        // follow whichever lane the player is currently in
+        const targetY = PLAYER_Y + 90;
+        c.y += (targetY - c.y) * Math.min(1, 3 * dt);
+        c.x += (laneX(player.lane) - c.x) * Math.min(1, 5 * dt);
+      } else {
+        c.y += speed * c.speedMul * dt;
+      }
 
       const cRect = {
         x: c.x - c.w * 0.36,
@@ -668,7 +719,7 @@
         const lateralGap = Math.abs(c.x - player.x);
         if (c.lane !== player.lane && lateralGap < LANE_WIDTH * 1.15) {
           distance += 18;
-          popups.push({ x: player.x, y: PLAYER_Y - 60, text: '+close call', life: 0.8, color: '#35d488' });
+          popups.push({ x: player.x, y: PLAYER_Y - 60, text: '+close call', life: 0.8, maxLife: 0.8, color: '#35d488' });
           Sound.nearMiss();
         }
       }
@@ -678,9 +729,13 @@
       }
     }
 
-    // refresh laneLastY snapshot (topmost y per lane among active cars)
+    // refresh laneLastY snapshot (topmost y per lane among active cars).
+    // Police is excluded: it never leaves and its .lane field isn't kept in
+    // sync with the lane it's currently steering toward, so including it
+    // would permanently block spawns in whatever lane it started in.
     laneLastY = new Array(LANE_COUNT).fill(-9999);
     for (const c of traffic) {
+      if (c.key === 'police') continue;
       if (c.y > laneLastY[c.lane]) laneLastY[c.lane] = c.y;
     }
 
@@ -710,6 +765,7 @@
     shake = 1;
     Sound.crash();
     Sound.stopEngine();
+    Sound.stopSiren();
     for (let i = 0; i < 26; i++) {
       const ang = rng() * Math.PI * 2;
       const spd = 60 + rng() * 220;
@@ -730,6 +786,21 @@
   function hitSpeedHump() {
     Sound.bump();
     playerBounce = 1;
+  }
+
+  function spawnPolice() {
+    traffic.push({
+      key: 'police',
+      lane: player.lane,
+      x: laneX(player.lane),
+      y: LH + 70,
+      w: 46,
+      h: 78,
+      speedMul: 0,
+      scored: true, // never triggers near-miss scoring
+    });
+    Sound.startSiren();
+    popups.push({ x: LW / 2, y: PLAYER_Y - 130, text: 'POLICE!', life: 1.6, maxLife: 1.6, color: '#ff3b3b', big: true });
   }
 
   // ---------- Drawing ----------
@@ -929,6 +1000,8 @@
         drawSpeedHump(c.x, c.y, c.w, c.h);
       } else if (c.key === 'moto') {
         drawMotorcycle(c.x, c.y, c.w, c.h, c.color);
+      } else if (c.key === 'police') {
+        drawPoliceCar(c.x, c.y, c.w, c.h);
       } else {
         drawCar(c.x, c.y, c.w, c.h, c.color, 0);
       }
@@ -949,10 +1022,15 @@
 
     // popups
     ctx.textAlign = 'center';
-    ctx.font = '700 16px -apple-system, sans-serif';
     for (const t of popups) {
-      ctx.globalAlpha = Math.max(0, t.life / 0.8);
+      ctx.font = t.big ? '900 30px -apple-system, sans-serif' : '700 16px -apple-system, sans-serif';
+      ctx.globalAlpha = Math.max(0, t.life / t.maxLife);
       ctx.fillStyle = t.color;
+      if (t.big) {
+        ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+        ctx.lineWidth = 4;
+        ctx.strokeText(t.text, t.x, t.y);
+      }
       ctx.fillText(t.text, t.x, t.y);
     }
     ctx.globalAlpha = 1;
@@ -961,6 +1039,66 @@
       drawTrafficLight();
       drawCountdown();
     }
+
+    ctx.restore();
+  }
+
+  function drawPoliceCar(x, y, w, h) {
+    ctx.save();
+    ctx.translate(x, y);
+
+    // shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    drawRoundedRect(-w / 2 + 3, -h / 2 + 6, w, h, 9);
+    ctx.fill();
+
+    // body (white)
+    ctx.fillStyle = '#f0f1f3';
+    drawRoundedRect(-w / 2, -h / 2, w, h, 9);
+    ctx.fill();
+
+    // black side accent band
+    ctx.fillStyle = '#191c22';
+    ctx.fillRect(-w / 2, -h * 0.04, w, h * 0.16);
+
+    // windshield
+    ctx.fillStyle = 'rgba(20,26,36,0.75)';
+    drawRoundedRect(-w / 2 + 6, -h / 2 + h * 0.16, w - 12, h * 0.22, 4);
+    ctx.fill();
+
+    // rear window
+    ctx.fillStyle = 'rgba(20,26,36,0.6)';
+    drawRoundedRect(-w / 2 + 7, h / 2 - h * 0.30, w - 14, h * 0.16, 4);
+    ctx.fill();
+
+    // headlights / taillights
+    ctx.fillStyle = '#fff6c9';
+    ctx.fillRect(-w / 2 + 3, -h / 2 + 2, 6, 4);
+    ctx.fillRect(w / 2 - 9, -h / 2 + 2, 6, 4);
+    ctx.fillStyle = '#ff4d4d';
+    ctx.fillRect(-w / 2 + 3, h / 2 - 6, 6, 4);
+    ctx.fillRect(w / 2 - 9, h / 2 - 6, 6, 4);
+
+    // side mirrors
+    ctx.fillStyle = '#f0f1f3';
+    ctx.fillRect(-w / 2 - 3, -h * 0.1, 3, 6);
+    ctx.fillRect(w / 2, -h * 0.1, 3, 6);
+
+    // roof light bar, alternating red/blue flash
+    const blink = Math.floor(performance.now() / 180) % 2 === 0;
+    const lightW = w * 0.2, lightH = h * 0.11, lightY = -h * 0.07;
+
+    ctx.fillStyle = blink ? '#ff2b2b' : '#5a1414';
+    if (blink) { ctx.shadowColor = '#ff2b2b'; ctx.shadowBlur = 8; }
+    drawRoundedRect(-w * 0.22, lightY, lightW, lightH, 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = !blink ? '#3f6fff' : '#141c4a';
+    if (!blink) { ctx.shadowColor = '#3f6fff'; ctx.shadowBlur = 8; }
+    drawRoundedRect(w * 0.02, lightY, lightW, lightH, 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
 
     ctx.restore();
   }
