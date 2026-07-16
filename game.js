@@ -56,6 +56,7 @@
     { key: 'suv',   w: 50, h: 82, speedMul: 0.9, weight: 3 },
     { key: 'truck', w: 48, h: 116, speedMul: 0.78, weight: 2 },
     { key: 'sport', w: 40, h: 68, speedMul: 1.2, weight: 2 },
+    { key: 'moto',  w: 20, h: 52, speedMul: 1.35, weight: 2 },
   ];
 
   const TRAFFIC_COLORS = ['#e94f4f', '#4f8ce9', '#e9a94f', '#8a5fd6', '#d6d6d6', '#4f4f4f', '#e94f9d', '#5fd68a'];
@@ -63,9 +64,6 @@
 
   // ---------- Lane squeeze events (random temporary lane closures) ----------
   const SQUEEZE_OPEN_PAIRS = [[0, 1], [1, 2], [2, 3]];
-  const SQUEEZE_CLEARING_TIME = 1.2;
-  const BARRIER_H = 130;
-  const BARRIER_GAP = 6;
 
   // ---------- Audio (synthesized with Web Audio API, no external assets) ----------
   const Sound = (() => {
@@ -261,7 +259,7 @@
   let scenery = [];
   let rng = Math.random;
 
-  // squeeze event state: 'idle' | 'active' | 'clearing'
+  // squeeze event state: 'idle' | 'active'
   let squeezeState = 'idle';
   let squeezeStateTimer = 0;
   let squeezeOpenLanes = [0, 1, 2, 3];
@@ -314,7 +312,8 @@
 
   function shiftLane(delta) {
     if (gameState !== STATE.PLAYING) return;
-    const newLane = Math.max(0, Math.min(LANE_COUNT - 1, player.targetLane + delta));
+    const [minLane, maxLane] = squeezeLaneBounds();
+    const newLane = Math.max(minLane, Math.min(maxLane, player.targetLane + delta));
     if (newLane !== player.targetLane) {
       player.targetLane = newLane;
       Sound.laneSwitch();
@@ -493,6 +492,7 @@
       const type = weightedCarType();
       const y = -type.h - rng() * 60;
       traffic.push({
+        key: type.key,
         lane,
         x: laneX(lane),
         y,
@@ -507,20 +507,14 @@
     }
   }
 
-  function makeBarrier(lane, y) {
-    return {
-      type: 'barrier',
-      lane,
-      x: laneX(lane),
-      y,
-      w: LANE_WIDTH * 0.82,
-      h: BARRIER_H,
-      speedMul: 1,
-      scored: true, // barriers never trigger near-miss scoring
-    };
+  function squeezeLaneBounds() {
+    if (squeezeState === 'active') {
+      return [Math.min(...squeezeOpenLanes), Math.max(...squeezeOpenLanes)];
+    }
+    return [0, LANE_COUNT - 1];
   }
 
-  // ---------- Lane squeeze state machine ----------
+  // ---------- Lane squeeze state machine (road itself narrows from 4 lanes to 2) ----------
   function updateSqueeze(dt) {
     if (squeezeState === 'idle') {
       if (elapsed >= nextSqueezeAt) {
@@ -529,39 +523,21 @@
         squeezeClosedLanes = [0, 1, 2, 3].filter((l) => !openPair.includes(l));
         squeezeState = 'active';
         squeezeStateTimer = 6 + rng() * 3;
-        // seed an unbroken wall of barrier segments above the screen in each closed lane
-        for (const lane of squeezeClosedLanes) {
-          let topY = -40;
-          for (let i = 0; i < 8; i++) {
-            traffic.push(makeBarrier(lane, topY));
-            topY -= (BARRIER_H + BARRIER_GAP);
-          }
+
+        // clear out any traffic now sitting on what just became grass
+        traffic = traffic.filter((c) => !squeezeClosedLanes.includes(c.lane));
+
+        // snap the player into the nearest surviving lane if theirs just closed
+        if (!squeezeOpenLanes.includes(player.targetLane)) {
+          player.targetLane = squeezeOpenLanes.reduce((a, b) =>
+            Math.abs(b - player.targetLane) < Math.abs(a - player.targetLane) ? b : a
+          );
         }
       }
       return;
     }
 
     if (squeezeState === 'active') {
-      squeezeStateTimer -= dt;
-      // keep replenishing the wall so there's never a gap to sneak through
-      for (const lane of squeezeClosedLanes) {
-        let minY = Infinity;
-        for (const c of traffic) {
-          if (c.type === 'barrier' && c.lane === lane && c.y < minY) minY = c.y;
-        }
-        if (minY === Infinity) minY = 0;
-        if (minY > -(BARRIER_H * 2 + BARRIER_GAP)) {
-          traffic.push(makeBarrier(lane, minY - BARRIER_H - BARRIER_GAP));
-        }
-      }
-      if (squeezeStateTimer <= 0) {
-        squeezeState = 'clearing';
-        squeezeStateTimer = SQUEEZE_CLEARING_TIME;
-      }
-      return;
-    }
-
-    if (squeezeState === 'clearing') {
       squeezeStateTimer -= dt;
       if (squeezeStateTimer <= 0) {
         squeezeState = 'idle';
@@ -817,33 +793,37 @@
       drawSceneryItem(s, x, y);
     }
 
-    // asphalt
+    // asphalt (only spans the currently-open lanes -- narrows during a squeeze)
+    const [openMin, openMax] = squeezeLaneBounds();
+    const asphaltX = ROAD_MARGIN + LANE_WIDTH * openMin;
+    const asphaltW = LANE_WIDTH * (openMax - openMin + 1);
+
     ctx.fillStyle = '#3a3f47';
-    ctx.fillRect(ROAD_MARGIN, 0, ROAD_WIDTH, LH);
+    ctx.fillRect(asphaltX, 0, asphaltW, LH);
 
     // subtle asphalt texture
     ctx.fillStyle = 'rgba(255,255,255,0.02)';
     for (let i = 0; i < 40; i++) {
-      const tx = ROAD_MARGIN + ((i * 53 + (scrollY * 0.2)) % ROAD_WIDTH);
+      const tx = asphaltX + ((i * 53 + (scrollY * 0.2)) % asphaltW);
       const ty = (i * 97) % LH;
       ctx.fillRect(tx, ty, 2, 10);
     }
 
-    // road edge lines
+    // road edge lines (sit at the edges of whatever's currently drivable)
     ctx.strokeStyle = '#f2e6b1';
     ctx.lineWidth = 4;
     ctx.beginPath();
-    ctx.moveTo(ROAD_MARGIN, 0); ctx.lineTo(ROAD_MARGIN, LH);
-    ctx.moveTo(LW - ROAD_MARGIN, 0); ctx.lineTo(LW - ROAD_MARGIN, LH);
+    ctx.moveTo(asphaltX, 0); ctx.lineTo(asphaltX, LH);
+    ctx.moveTo(asphaltX + asphaltW, 0); ctx.lineTo(asphaltX + asphaltW, LH);
     ctx.stroke();
 
-    // lane dividers (dashed, scrolling)
+    // lane dividers (dashed, scrolling) -- only between still-open lanes
     ctx.strokeStyle = 'rgba(255,255,255,0.8)';
     ctx.lineWidth = 3;
     const dashLen = 26, gapLen = 22;
     ctx.setLineDash([dashLen, gapLen]);
     ctx.lineDashOffset = -scrollY;
-    for (let i = 1; i < LANE_COUNT; i++) {
+    for (let i = openMin + 1; i <= openMax; i++) {
       const x = ROAD_MARGIN + LANE_WIDTH * i;
       ctx.beginPath();
       ctx.moveTo(x, -dashLen);
@@ -864,8 +844,8 @@
 
     // traffic
     for (const c of traffic) {
-      if (c.type === 'barrier') {
-        drawBarrier(c.x, c.y, c.w, c.h);
+      if (c.key === 'moto') {
+        drawMotorcycle(c.x, c.y, c.w, c.h, c.color);
       } else {
         drawCar(c.x, c.y, c.w, c.h, c.color, 0);
       }
@@ -902,36 +882,46 @@
     ctx.restore();
   }
 
-  function drawBarrier(x, y, w, h) {
+  function drawMotorcycle(x, y, w, h, color) {
     ctx.save();
     ctx.translate(x, y);
 
+    // shadow
     ctx.fillStyle = 'rgba(0,0,0,0.28)';
-    drawRoundedRect(-w / 2 + 3, -h / 2 + 5, w, h, 8);
+    ctx.beginPath();
+    ctx.ellipse(1, 3, w * 0.4, h * 0.46, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    drawRoundedRect(-w / 2, -h / 2, w, h, 8);
-    ctx.save();
-    ctx.clip();
-    ctx.fillStyle = '#f2b400';
-    ctx.fillRect(-w / 2, -h / 2, w, h);
-    ctx.fillStyle = '#1a1a1a';
-    const stripeW = 14;
-    for (let sx = -w / 2 - h; sx < w / 2 + h; sx += stripeW * 2) {
-      ctx.beginPath();
-      ctx.moveTo(sx, -h / 2);
-      ctx.lineTo(sx + stripeW, -h / 2);
-      ctx.lineTo(sx + stripeW + h, h / 2);
-      ctx.lineTo(sx + h, h / 2);
-      ctx.closePath();
-      ctx.fill();
-    }
-    ctx.restore();
+    // wheels
+    ctx.fillStyle = '#161616';
+    ctx.beginPath(); ctx.ellipse(0, h * 0.32, w * 0.42, w * 0.3, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(0, -h * 0.34, w * 0.4, w * 0.28, 0, 0, Math.PI * 2); ctx.fill();
 
-    ctx.strokeStyle = 'rgba(0,0,0,0.45)';
-    ctx.lineWidth = 3;
-    drawRoundedRect(-w / 2, -h / 2, w, h, 8);
-    ctx.stroke();
+    // body
+    ctx.fillStyle = color;
+    drawRoundedRect(-w * 0.28, -h * 0.32, w * 0.56, h * 0.64, w * 0.26);
+    ctx.fill();
+
+    // fuel tank / seat highlight
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    drawRoundedRect(-w * 0.2, -h * 0.2, w * 0.4, h * 0.22, w * 0.16);
+    ctx.fill();
+
+    // rider helmet
+    ctx.fillStyle = '#26303c';
+    ctx.beginPath();
+    ctx.arc(0, -h * 0.16, w * 0.32, 0, Math.PI * 2);
+    ctx.fill();
+
+    // headlight
+    ctx.fillStyle = '#fff6c9';
+    ctx.beginPath();
+    ctx.arc(0, -h / 2 + 4, w * 0.16, 0, Math.PI * 2);
+    ctx.fill();
+
+    // taillight
+    ctx.fillStyle = '#ff4d4d';
+    ctx.fillRect(-w * 0.12, h / 2 - 5, w * 0.24, 3);
 
     ctx.restore();
   }
