@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lanedodger-v2';
+const CACHE_NAME = 'lanedodger-v4';
 const ASSETS = [
   './',
   './index.html',
@@ -28,11 +28,18 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
   // Network-first: always prefer the latest deployed code when online, so
-  // updates show up immediately. Only fall back to the cache when offline.
+  // updates show up immediately. Build a fresh Request from just the URL
+  // (rather than passing event.request + {cache:'no-store'}) -- browsers
+  // reject constructing a new Request that would inherit mode:'navigate'
+  // from a navigation's event.request, which made that combination throw
+  // and broke the offline fallback entirely. A plain fetch(event.request)
+  // can still be silently satisfied by the browser's own HTTP cache, which
+  // defeats "network-first", so cache:'no-store' is still needed -- just
+  // via a clean Request that never carries a navigate mode.
   event.respondWith(
-    fetch(event.request)
+    fetch(new Request(event.request.url, { cache: 'no-store' }))
       .then((response) => {
-        if (response && response.status === 200 && response.type === 'basic') {
+        if (response && response.ok) {
           const clone = response.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
         }
