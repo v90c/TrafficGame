@@ -165,6 +165,7 @@
     function bump() {
       blip({ freq: 95, freqEnd: 50, duration: 0.12, type: 'sine', gainPeak: 0.32 });
       noiseBurst({ duration: 0.08, gainPeak: 0.22, filterFreq: 500 });
+      blip({ freq: 300, freqEnd: 650, duration: 0.18, type: 'triangle', gainPeak: 0.14, delay: 0.02 });
     }
 
     function startEngine() {
@@ -279,8 +280,7 @@
   let squeezeAnimMax = LANE_COUNT - 1; // the target open-lane range instead of snapping
 
   let humpTimer = 0;         // ms until next speed hump spawns
-  let playerBounce = 0;      // 0..1, decays after hitting a hump (squash/stretch)
-  let speedPenaltyTimer = 0; // seconds remaining of post-hump slowdown
+  let playerBounce = 0; // 0..1, decays after hitting a hump (jump/lift arc)
 
   function resetGame() {
     const cfg = DIFFICULTIES[selectedDiff];
@@ -312,7 +312,6 @@
 
     humpTimer = 2500 + rng() * 2000;
     playerBounce = 0;
-    speedPenaltyTimer = 0;
 
     scenery = [];
     for (let i = 0; i < 15; i++) {
@@ -585,10 +584,8 @@
     const cfg = DIFFICULTIES[selectedDiff];
     elapsed += dt;
 
-    speedPenaltyTimer = Math.max(0, speedPenaltyTimer - dt);
-    playerBounce = Math.max(0, playerBounce - dt * 4);
-    const speedPenaltyMul = speedPenaltyTimer > 0 ? 0.55 : 1;
-    const speed = Math.min(cfg.maxSpeed, cfg.baseSpeed + cfg.speedRamp * elapsed) * speedPenaltyMul;
+    playerBounce = Math.max(0, playerBounce - dt * 2.2); // slower decay = a visible hang-time in the air
+    const speed = Math.min(cfg.maxSpeed, cfg.baseSpeed + cfg.speedRamp * elapsed);
     const spawnInterval = Math.max(cfg.minSpawnInterval, cfg.spawnInterval - cfg.spawnRampMs * 1000 * (elapsed / 1000) * 0.06);
 
     Sound.updateEngine(speed / cfg.maxSpeed);
@@ -732,9 +729,7 @@
 
   function hitSpeedHump() {
     Sound.bump();
-    shake = Math.max(shake, 0.4);
     playerBounce = 1;
-    speedPenaltyTimer = 0.7;
   }
 
   // ---------- Drawing ----------
@@ -748,20 +743,27 @@
     ctx.closePath();
   }
 
-  function drawCar(x, y, w, h, color, tilt, squash = 0) {
+  function drawCar(x, y, w, h, color, tilt, hopPhase = 0) {
     ctx.save();
     ctx.translate(x, y);
-    if (tilt) ctx.rotate(tilt);
-    if (squash > 0) {
-      // brief squash/stretch "boing" after hitting a speed hump
-      const wobble = Math.sin(squash * Math.PI);
-      ctx.scale(1 + wobble * 0.18, 1 - wobble * 0.18);
-    }
 
-    // shadow
+    // hitting a speed hump launches the car briefly into the air: the shadow
+    // stays grounded (shrinking/fading as the car gets "further" from the
+    // road) while the body itself lifts up and grows slightly toward camera.
+    const air = Math.sin(Math.min(1, hopPhase) * Math.PI);
+
+    ctx.save();
+    ctx.globalAlpha *= 1 - air * 0.35;
     ctx.fillStyle = 'rgba(0,0,0,0.28)';
-    drawRoundedRect(-w / 2 + 3, -h / 2 + 6, w, h, 9);
+    ctx.translate(3, 6);
+    ctx.scale(1 - air * 0.22, 1 - air * 0.22);
+    drawRoundedRect(-w / 2, -h / 2, w, h, 9);
     ctx.fill();
+    ctx.restore();
+
+    ctx.translate(0, -air * 18);
+    ctx.scale(1 + air * 0.22, 1 + air * 0.22);
+    if (tilt) ctx.rotate(tilt);
 
     // body
     ctx.fillStyle = color;
